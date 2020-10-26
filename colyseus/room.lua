@@ -7,7 +7,6 @@ local EventEmitter = require('colyseus.eventemitter')
 local utils = require('colyseus.utils')
 local decode = require('colyseus.serialization.schema.schema').decode
 local encode = require('colyseus.serialization.schema.encode')
-local storage = require('colyseus.storage')
 local serialization = require('colyseus.serialization')
 
 Room = {}
@@ -26,7 +25,7 @@ function Room.new(name)
     previous_code = nil
   })
   setmetatable(room, Room)
-  room:init(name, options)
+  room:init(name)
   return room
 end
 
@@ -34,7 +33,7 @@ function Room:init(name)
   self.id = nil
   self.name = name
   self.connection = Connection.new()
-  self.serializer = serialization.get_serializer('fossil-delta').new()
+  self.serializer = nil
   self.on_message_handlers = {}
 
   -- remove all listeners on leave
@@ -88,7 +87,14 @@ function Room:loop (timeout)
 end
 
 function Room:on_message(type, handler)
-  self.on_message_handlers[self:get_message_handler_key(type)] = handler
+  local _self = self
+
+  local message_type = self:get_message_handler_key(type)
+  self.on_message_handlers[message_type] = handler
+
+  return function()
+    _self.on_message_handlers[message_type] = nil
+  end
 end
 
 function Room:_on_batch_message(binary_string)
@@ -112,13 +118,9 @@ function Room:_on_message (binary_string, it)
     self.serializer_id = decode.string(message, it)
 
     local serializer = serialization.get_serializer(self.serializer_id)
-    if not serializer then
-      error("missing serializer: " .. self.serializer_id);
-    end
+    if not serializer then error("missing serializer: " .. self.serializer_id); end
 
-    if self.serializer_id ~= "fossil-delta" then
-      self.serializer = serializer.new()
-    end
+    self.serializer = serializer:new()
 
     if #message > it.offset and self.serializer.handshake ~= nil then
       self.serializer:handshake(message, it)
@@ -144,9 +146,10 @@ function Room:_on_message (binary_string, it)
     self:patch(message, it)
 
   elseif code == protocol.ROOM_DATA_SCHEMA then
-    local context = self.serializer:get_state()._context
+    local typeid = decode.number(message, it)
 
-    local message_type = context:get(message[it.offset])
+    local context = self.serializer:get_state()._context
+    local message_type = context:get(typeid)
     local schema_message = message_type:new()
 
     it.offset = it.offset + 1
